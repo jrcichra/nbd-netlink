@@ -110,6 +110,7 @@ pub struct NBDConnect {
     block_size_bytes: u64,
     server_flags: u64,
     client_flags: u64,
+    index: Option<u64>,
 }
 
 impl NBDConnect {
@@ -120,6 +121,7 @@ impl NBDConnect {
             block_size_bytes: 4096,
             server_flags: HAS_FLAGS,
             client_flags: 0,
+            index: None,
         }
     }
 
@@ -165,6 +167,12 @@ impl NBDConnect {
         self
     }
 
+    /// Set the index the device should use
+    pub fn index(&mut self, index: u64) -> &mut Self {
+        self.index = Some(index);
+        self
+    }
+
     /// Tell the kernel to connect an NBD device to the specified sockets.
     ///
     /// Returns the index of the newly connected NBD device.
@@ -193,6 +201,9 @@ impl NBDConnect {
         attrs.push(attr(NbdAttr::BlockSizeBytes, self.block_size_bytes)?);
         attrs.push(attr(NbdAttr::ServerFlags, self.server_flags)?);
         attrs.push(attr(NbdAttr::ClientFlags, self.client_flags)?);
+        if let Some(index) = self.index {
+            attrs.push(attr(NbdAttr::Index, index)?);
+        }
         attrs.push(sockets_attr);
 
         let genl_header = Genlmsghdr::new(NbdCmd::Connect, 1, attrs);
