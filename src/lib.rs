@@ -224,6 +224,58 @@ impl NBDConnect {
         let index = handle.get_attr_payload_as::<u32>(NbdAttr::Index)?;
         Ok(index)
     }
+
+    /// Tell the kernel to reconfigure an NBD device to the specified sockets.
+    ///
+    /// Returns the index of the newly connected NBD device.
+    pub fn reconfigure<'a>(
+        &self,
+        nbd: &mut NBD,
+        sockets: impl IntoIterator<Item = &'a (impl AsRawFd + 'a)>,
+    ) -> anyhow::Result<u32> {
+        fn attr<T: NlAttrType>(
+            t: T,
+            p: impl Size + ToBytes,
+        ) -> Result<Nlattr<T, Buffer>, SerError> {
+            Nlattr::new(false, false, t, p)
+        }
+        let mut sockets_attr = Nlattr::new(true, false, NbdAttr::Sockets, Buffer::new())?;
+        for socket in sockets {
+            sockets_attr.add_nested_attribute(&Nlattr::new(
+                true,
+                false,
+                NbdSockItem::Item,
+                attr(NbdSock::Fd, socket.as_raw_fd())?,
+            )?)?;
+        }
+        let mut attrs = GenlBuffer::new();
+        attrs.push(attr(NbdAttr::SizeBytes, self.size_bytes)?);
+        attrs.push(attr(NbdAttr::BlockSizeBytes, self.block_size_bytes)?);
+        attrs.push(attr(NbdAttr::ServerFlags, self.server_flags)?);
+        attrs.push(attr(NbdAttr::ClientFlags, self.client_flags)?);
+        if let Some(index) = self.index {
+            attrs.push(attr(NbdAttr::Index, index)?);
+        }
+        attrs.push(sockets_attr);
+
+        let genl_header = Genlmsghdr::new(NbdCmd::Reconfigure, 1, attrs);
+        let nl_header = Nlmsghdr::new(
+            None,
+            nbd.nbd_family,
+            NlmFFlags::new(&[NlmF::Request]),
+            None,
+            None,
+            NlPayload::Payload(genl_header),
+        );
+        nbd.nl.send(nl_header)?;
+        let response: Nlmsghdr<u16, Genlmsghdr<NbdCmd, NbdAttr>> = nbd
+            .nl
+            .recv()?
+            .ok_or_else(|| anyhow!("Error connecting NBD device: No response received"))?;
+        let handle = response.get_payload()?.get_attr_handle();
+        let index = handle.get_attr_payload_as::<u32>(NbdAttr::Index)?;
+        Ok(index)
+    }
 }
 
 impl Default for NBDConnect {
