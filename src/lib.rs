@@ -214,3 +214,9 @@ impl NBDConnect {
         Ok(index)
     }
 }
+
+impl Default for NBDConnect {
+    fn default() -> Self {
+        Self::new()
+    }
+}
