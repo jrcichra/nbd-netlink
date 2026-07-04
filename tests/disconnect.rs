@@ -43,11 +43,16 @@ impl nbd_async::BlockDeviceSend for MemDevice {
     }
 }
 
+/// Read the pid sysfs attribute, treating a missing file as "0" — the
+/// kernel's teardown (`nbd_config_put`) removes the `pid` attribute file
+/// entirely once the device is fully released, rather than leaving it
+/// behind reading "0".
 fn read_pid(index: u32) -> Result<String> {
-    Ok(std::fs::read_to_string(format!("/sys/block/nbd{index}/pid"))
-        .context("read pid sysfs attr")?
-        .trim()
-        .to_string())
+    match std::fs::read_to_string(format!("/sys/block/nbd{index}/pid")) {
+        Ok(s) => Ok(s.trim().to_string()),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok("0".to_string()),
+        Err(e) => Err(e).context("read pid sysfs attr"),
+    }
 }
 
 fn write_one_block(index: u32, pattern: u8) -> Result<()> {
@@ -107,7 +112,7 @@ async fn disconnect_releases_a_wedged_device() -> Result<()> {
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert!(
         !stuck_write.is_finished(),
-        "write completed without a live socket — nothing to disconnect out of"
+        "write completed without a live socket - nothing to disconnect out of"
     );
 
     // Force-disconnect must itself return promptly, not hang — this is

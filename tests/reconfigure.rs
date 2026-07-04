@@ -128,7 +128,7 @@ async fn reconfigure_preserves_device_and_in_flight_io() -> Result<()> {
     eprintln!("[checkpoint] stuck_write.is_finished() = {}", stuck_write.is_finished());
     assert!(
         !stuck_write.is_finished(),
-        "write completed without a live socket — test isn't exercising the stall"
+        "write completed without a live socket - test isn't exercising the stall"
     );
 
     // --- reconfigure a fresh socket onto the same index ---
