@@ -124,9 +124,33 @@ async fn disconnect_releases_a_wedged_device() -> Result<()> {
         .expect("join")
         .ok();
 
-    // And the device is actually released, not just superficially ack'd.
-    let pid = read_pid(index)?;
+    // And the device is actually released, not just superficially ack'd:
+    // sysfs pid should return to 0. The kernel's own teardown (workqueue
+    // flush, refcount drop to zero) isn't necessarily complete the
+    // microsecond disconnect()'s netlink call returns, so poll briefly
+    // rather than asserting instantaneously.
+    let mut pid = read_pid(index)?;
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while pid != "0" && std::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        pid = read_pid(index)?;
+    }
     assert_eq!(pid, "0", "device pid did not return to 0 after disconnect");
+
+    // The strongest proof it's actually free: a brand new connect() to the
+    // same index — the real scenario tetra cares about, since after a
+    // force-disconnect the next thing that happens is a fresh attach.
+    let (kernel_side2, _our_side2) = StdUnixStream::pair().context("socketpair")?;
+    let mut nbd2 = NBD::new().context("reopen NBD netlink socket")?;
+    tokio::task::block_in_place(|| {
+        NBDConnect::new()
+            .size_bytes(SIZE_BYTES)
+            .block_size(BLOCK_SIZE)
+            .index(DEVICE_INDEX)
+            .backend_identifier(COOKIE)
+            .connect(&mut nbd2, &[kernel_side2])
+    })
+    .context("device did not accept a fresh connect() after disconnect")?;
 
     Ok(())
 }
