@@ -69,14 +69,8 @@ fn roundtrip_io(index: u32, pattern: u8) -> Result<()> {
     Ok(())
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn reconfigure_preserves_device_and_in_flight_io() -> Result<()> {
-    tokio::time::timeout(Duration::from_secs(60), run())
-        .await
-        .context("test timed out after 60s — something is hung, not just slow")?
-}
-
-async fn run() -> Result<()> {
     eprintln!("[checkpoint] opening netlink socket");
     let mut nbd = NBD::new().context("open NBD netlink socket (need CAP_NET_ADMIN)")?;
     let store = Arc::new(Mutex::new(vec![0u8; SIZE_BYTES as usize]));
@@ -84,14 +78,16 @@ async fn run() -> Result<()> {
     // --- initial connect ---
     eprintln!("[checkpoint] calling connect()");
     let (kernel_side, our_side) = StdUnixStream::pair().context("socketpair")?;
-    let index = NBDConnect::new()
-        .size_bytes(SIZE_BYTES)
-        .block_size(BLOCK_SIZE)
-        .index(DEVICE_INDEX)
-        .backend_identifier(COOKIE)
-        .dead_conn_timeout_secs(DEAD_CONN_TIMEOUT_SECS)
-        .connect(&mut nbd, &[kernel_side])
-        .context("initial connect")?;
+    let index = tokio::task::block_in_place(|| {
+        NBDConnect::new()
+            .size_bytes(SIZE_BYTES)
+            .block_size(BLOCK_SIZE)
+            .index(DEVICE_INDEX)
+            .backend_identifier(COOKIE)
+            .dead_conn_timeout_secs(DEAD_CONN_TIMEOUT_SECS)
+            .connect(&mut nbd, &[kernel_side])
+    })
+    .context("initial connect")?;
     eprintln!("[checkpoint] connect() returned index {index}");
     drop(nbd); // netlink socket isn't needed while serving; recreated before reconfigure below
 
@@ -139,14 +135,16 @@ async fn run() -> Result<()> {
     eprintln!("[checkpoint] calling reconfigure()");
     let mut nbd = NBD::new().context("reopen NBD netlink socket")?;
     let (kernel_side, our_side) = StdUnixStream::pair().context("socketpair")?;
-    let reconfigured_index = NBDConnect::new()
-        .size_bytes(SIZE_BYTES)
-        .block_size(BLOCK_SIZE)
-        .index(index as u64)
-        .backend_identifier(COOKIE)
-        .dead_conn_timeout_secs(DEAD_CONN_TIMEOUT_SECS)
-        .reconfigure(&mut nbd, &[kernel_side])
-        .context("reconfigure")?;
+    let reconfigured_index = tokio::task::block_in_place(|| {
+        NBDConnect::new()
+            .size_bytes(SIZE_BYTES)
+            .block_size(BLOCK_SIZE)
+            .index(index as u64)
+            .backend_identifier(COOKIE)
+            .dead_conn_timeout_secs(DEAD_CONN_TIMEOUT_SECS)
+            .reconfigure(&mut nbd, &[kernel_side])
+    })
+    .context("reconfigure")?;
     eprintln!("[checkpoint] reconfigure() returned index {reconfigured_index}");
     assert_eq!(reconfigured_index, index, "reconfigure landed on a different index");
     assert_eq!(

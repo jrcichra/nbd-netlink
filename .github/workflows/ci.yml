@@ -8,6 +8,7 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
 
@@ -24,3 +25,7 @@ jobs:
 
       - name: cargo test (netlink connect/reconfigure needs root + CAP_NET_ADMIN)
         run: sudo -E "$(command -v cargo)" test -- --nocapture --test-threads=1
+
+      - name: dmesg (nbd driver messages)
+        if: always()
+        run: sudo dmesg | grep -i nbd || true
