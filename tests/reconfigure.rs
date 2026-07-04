@@ -117,15 +117,17 @@ async fn reconfigure_preserves_device_and_in_flight_io() -> Result<()> {
     eprintln!("[checkpoint] serve task aborted");
 
     // The driver only parks a request against dead_conn_timeout if the
-    // socket is *already* marked dead at dispatch time; otherwise it hits a
-    // fast synchronous-failure path instead of blocking. There's a real race
-    // between our socket close propagating into that internal state and our
-    // own next write being dispatched, so fire one throwaway op first and
-    // ignore its result — its only job is to lose that race deterministically
-    // so the *next* one reliably observes an already-dead socket.
-    let idx_copy = index;
-    let _ = tokio::task::spawn_blocking(move || roundtrip_io(idx_copy, 0x00)).await;
-    eprintln!("[checkpoint] primer op forced socket into dead state");
+    // socket is already marked dead (nsock->dead) at dispatch time;
+    // otherwise it hits a fast synchronous-failure path instead. That
+    // marking happens asynchronously, in the background receiver noticing
+    // the peer closed (confirmed by dmesg timestamps landing within a few
+    // ms of the close, with no new request involved) — so give it a moment
+    // rather than dispatching our probe write in the same instant. Note: a
+    // throwaway "primer" request here is the wrong fix — if it's the one
+    // that ends up waiting out the full dead_conn_timeout, the kernel marks
+    // the connection permanently DISCONNECTED afterward, which makes every
+    // later request fail fast instead of parking, breaking the real test.
+    tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Kick off a write while nothing is listening on the kernel's socket; with
     // dead_conn_timeout set the kernel parks this request rather than

@@ -107,12 +107,15 @@ async fn disconnect_releases_a_wedged_device() -> Result<()> {
     serve_handle.abort();
     let _ = serve_handle.await;
 
-    // See the equivalent comment in reconfigure.rs: the driver only parks a
-    // request against a dead connection if the socket is already marked
-    // dead at dispatch time, so fire a throwaway op first to deterministically
-    // lose that race before measuring whether the next one stalls.
-    let idx_copy = index;
-    let _ = tokio::task::spawn_blocking(move || write_one_block(idx_copy, 0x00)).await;
+    // See the equivalent comment in reconfigure.rs: the socket-dead marking
+    // happens asynchronously in the background receiver, so give it a
+    // moment rather than racing our next write against it. A throwaway
+    // "primer" request here is the wrong fix — if it's the one that ends up
+    // waiting out the full dead_conn_timeout, the kernel marks the
+    // connection permanently DISCONNECTED afterward, breaking every later
+    // request instead of just this one (observed in CI: this test then
+    // took ~30s and failed on the *next* write instead of this one).
+    tokio::time::sleep(Duration::from_millis(100)).await;
 
     let idx_copy = index;
     let stuck_write = tokio::task::spawn_blocking(move || write_one_block(idx_copy, 0xCD));
