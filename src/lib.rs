@@ -103,6 +103,46 @@ impl NBD {
             .context("Could not resolve the NBD generic netlink family")?;
         Ok(Self { nl, nbd_family })
     }
+
+    /// Tell the kernel to disconnect and tear down the NBD device at `index`,
+    /// aborting any queued I/O rather than waiting for it to drain — the
+    /// netlink equivalent of the classic `NBD_DISCONNECT`/`NBD_CLEAR_QUE`/
+    /// `NBD_CLEAR_SOCK` ioctl sequence, in one call.
+    pub fn disconnect(&mut self, index: u64) -> anyhow::Result<()> {
+        fn attr<T: NlAttrType>(
+            t: T,
+            p: impl Size + ToBytes,
+        ) -> Result<Nlattr<T, Buffer>, SerError> {
+            Nlattr::new(false, false, t, p)
+        }
+        let mut attrs = GenlBuffer::new();
+        attrs.push(attr(NbdAttr::Index, index)?);
+
+        let genl_header = Genlmsghdr::new(NbdCmd::Disconnect, 1, attrs);
+        let nl_header = Nlmsghdr::new(
+            None,
+            self.nbd_family,
+            // Same lesson as reconfigure(): nbd_genl_disconnect() just
+            // returns an int with no explicit reply skb, so without
+            // NlmF::Ack the kernel sends nothing back on success and recv()
+            // blocks forever even though the disconnect already happened.
+            NlmFFlags::new(&[NlmF::Request, NlmF::Ack]),
+            None,
+            None,
+            NlPayload::Payload(genl_header),
+        );
+        self.nl.send(nl_header)?;
+        let response: Nlmsghdr<u16, Genlmsghdr<NbdCmd, NbdAttr>> = self
+            .nl
+            .recv()?
+            .ok_or_else(|| anyhow!("Error disconnecting NBD device: no response received"))?;
+        match response.nl_payload {
+            NlPayload::Ack(_) => Ok(()),
+            NlPayload::Payload(_) => Ok(()),
+            NlPayload::Err(e) => Err(anyhow!("disconnect failed: {e}")),
+            NlPayload::Empty => Err(anyhow!("disconnect: empty response")),
+        }
+    }
 }
 
 /// A builder for an NBD connect call.
