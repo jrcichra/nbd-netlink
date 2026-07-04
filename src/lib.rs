@@ -60,6 +60,7 @@ enum NbdAttr {
     Sockets = 7,
     DeadConnTimeout = 8,
     DeviceList = 9,
+    BackendIdentifier = 10,
 }
 impl NlAttrType for NbdAttr {}
 
@@ -111,6 +112,7 @@ pub struct NBDConnect {
     server_flags: u64,
     client_flags: u64,
     index: Option<u64>,
+    backend_identifier: Option<String>,
 }
 
 impl NBDConnect {
@@ -122,6 +124,7 @@ impl NBDConnect {
             server_flags: HAS_FLAGS,
             client_flags: 0,
             index: None,
+            backend_identifier: None,
         }
     }
 
@@ -173,6 +176,18 @@ impl NBDConnect {
         self
     }
 
+    /// Set an opaque backend identifier ("cookie") for the device.
+    ///
+    /// The kernel stores this string and exposes it back at
+    /// `/sys/block/<dev>/backend`, so a process that starts after the one
+    /// that called [`connect`](Self::connect) can read it and confirm it is
+    /// [`reconfigure`](Self::reconfigure)-ing the device it thinks it is,
+    /// before handing the kernel a new socket for it.
+    pub fn backend_identifier(&mut self, backend_identifier: impl Into<String>) -> &mut Self {
+        self.backend_identifier = Some(backend_identifier.into());
+        self
+    }
+
     /// Tell the kernel to connect an NBD device to the specified sockets.
     ///
     /// Returns the index of the newly connected NBD device.
@@ -203,6 +218,9 @@ impl NBDConnect {
         attrs.push(attr(NbdAttr::ClientFlags, self.client_flags)?);
         if let Some(index) = self.index {
             attrs.push(attr(NbdAttr::Index, index)?);
+        }
+        if let Some(backend_identifier) = &self.backend_identifier {
+            attrs.push(attr(NbdAttr::BackendIdentifier, backend_identifier.as_str())?);
         }
         attrs.push(sockets_attr);
 
@@ -255,6 +273,9 @@ impl NBDConnect {
         attrs.push(attr(NbdAttr::ClientFlags, self.client_flags)?);
         if let Some(index) = self.index {
             attrs.push(attr(NbdAttr::Index, index)?);
+        }
+        if let Some(backend_identifier) = &self.backend_identifier {
+            attrs.push(attr(NbdAttr::BackendIdentifier, backend_identifier.as_str())?);
         }
         attrs.push(sockets_attr);
 
