@@ -282,14 +282,16 @@ impl NBDConnect {
                 attr(NbdSock::Fd, socket.as_raw_fd())?,
             )?)?;
         }
+        let index = self
+            .index
+            .context("reconfigure() requires an index (the kernel requires NBD_ATTR_INDEX to know which device to reconfigure)")?;
+
         let mut attrs = GenlBuffer::new();
         attrs.push(attr(NbdAttr::SizeBytes, self.size_bytes)?);
         attrs.push(attr(NbdAttr::BlockSizeBytes, self.block_size_bytes)?);
         attrs.push(attr(NbdAttr::ServerFlags, self.server_flags)?);
         attrs.push(attr(NbdAttr::ClientFlags, self.client_flags)?);
-        if let Some(index) = self.index {
-            attrs.push(attr(NbdAttr::Index, index)?);
-        }
+        attrs.push(attr(NbdAttr::Index, index)?);
         if let Some(backend_identifier) = &self.backend_identifier {
             attrs.push(attr(NbdAttr::BackendIdentifier, backend_identifier.as_str())?);
         }
@@ -302,7 +304,16 @@ impl NBDConnect {
         let nl_header = Nlmsghdr::new(
             None,
             nbd.nbd_family,
-            NlmFFlags::new(&[NlmF::Request]),
+            // Unlike `NBD_CMD_CONNECT`, the kernel's reconfigure handler
+            // (`nbd_genl_reconfigure`) never builds an explicit reply
+            // message on success — it just returns 0. Without requesting
+            // `NlmF::Ack` here, the kernel sends back nothing at all on
+            // success and a caller's `recv()` blocks forever, even though
+            // the reconfigure actually completed (confirmed against the
+            // kernel source and a real hang in CI: `dmesg` showed
+            // "reconnected socket" logged immediately while this call sat
+            // blocked for minutes).
+            NlmFFlags::new(&[NlmF::Request, NlmF::Ack]),
             None,
             None,
             NlPayload::Payload(genl_header),
@@ -311,10 +322,17 @@ impl NBDConnect {
         let response: Nlmsghdr<u16, Genlmsghdr<NbdCmd, NbdAttr>> = nbd
             .nl
             .recv()?
-            .ok_or_else(|| anyhow!("Error connecting NBD device: No response received"))?;
-        let handle = response.get_payload()?.get_attr_handle();
-        let index = handle.get_attr_payload_as::<u32>(NbdAttr::Index)?;
-        Ok(index)
+            .ok_or_else(|| anyhow!("Error reconfiguring NBD device: no response received"))?;
+        match response.nl_payload {
+            // Plain success ACK — the handler didn't send an Index back,
+            // but we already know it since we had to supply it above.
+            NlPayload::Ack(_) => Ok(index as u32),
+            // Tolerate a kernel that does send a payload back, in case
+            // this handler ever changes to mirror `connect()`.
+            NlPayload::Payload(ref p) => Ok(p.get_attr_handle().get_attr_payload_as::<u32>(NbdAttr::Index)?),
+            NlPayload::Err(e) => Err(anyhow!("reconfigure failed: {e}")),
+            NlPayload::Empty => Err(anyhow!("reconfigure: empty response")),
+        }
     }
 }
 
