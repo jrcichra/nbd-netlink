@@ -14,6 +14,11 @@ anyhow = "1.0.100"
 neli = "0.6.5"
 neli-proc-macros = "0.1.4"
 
+[dev-dependencies]
+async-trait = "0.1"
+nbd-async = { git = "https://github.com/oll3/nbd-async.git" }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "time"] }
+
 [lints.rust]
 non_ascii_idents = "deny"
 unfulfilled_lint_expectations = "deny"
