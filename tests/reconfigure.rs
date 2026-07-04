@@ -116,9 +116,20 @@ async fn reconfigure_preserves_device_and_in_flight_io() -> Result<()> {
     let _ = serve_handle.await;
     eprintln!("[checkpoint] serve task aborted");
 
+    // The driver only parks a request against dead_conn_timeout if the
+    // socket is *already* marked dead at dispatch time; otherwise it hits a
+    // fast synchronous-failure path instead of blocking. There's a real race
+    // between our socket close propagating into that internal state and our
+    // own next write being dispatched, so fire one throwaway op first and
+    // ignore its result — its only job is to lose that race deterministically
+    // so the *next* one reliably observes an already-dead socket.
+    let idx_copy = index;
+    let _ = tokio::task::spawn_blocking(move || roundtrip_io(idx_copy, 0x00)).await;
+    eprintln!("[checkpoint] primer op forced socket into dead state");
+
     // Kick off a write while nothing is listening on the kernel's socket; with
-    // no NBD_ATTR_TIMEOUT set the kernel parks this request indefinitely
-    // rather than erroring, which is exactly the guarantee we're testing.
+    // dead_conn_timeout set the kernel parks this request rather than
+    // erroring, which is exactly the guarantee we're testing.
     let idx_copy = index;
     let stuck_write = tokio::task::spawn_blocking(move || roundtrip_io(idx_copy, 0xCD));
 
