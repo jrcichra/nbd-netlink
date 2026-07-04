@@ -71,10 +71,18 @@ fn roundtrip_io(index: u32, pattern: u8) -> Result<()> {
 
 #[tokio::test]
 async fn reconfigure_preserves_device_and_in_flight_io() -> Result<()> {
+    tokio::time::timeout(Duration::from_secs(60), run())
+        .await
+        .context("test timed out after 60s — something is hung, not just slow")?
+}
+
+async fn run() -> Result<()> {
+    eprintln!("[checkpoint] opening netlink socket");
     let mut nbd = NBD::new().context("open NBD netlink socket (need CAP_NET_ADMIN)")?;
     let store = Arc::new(Mutex::new(vec![0u8; SIZE_BYTES as usize]));
 
     // --- initial connect ---
+    eprintln!("[checkpoint] calling connect()");
     let (kernel_side, our_side) = StdUnixStream::pair().context("socketpair")?;
     let index = NBDConnect::new()
         .size_bytes(SIZE_BYTES)
@@ -84,6 +92,7 @@ async fn reconfigure_preserves_device_and_in_flight_io() -> Result<()> {
         .dead_conn_timeout_secs(DEAD_CONN_TIMEOUT_SECS)
         .connect(&mut nbd, &[kernel_side])
         .context("initial connect")?;
+    eprintln!("[checkpoint] connect() returned index {index}");
     drop(nbd); // netlink socket isn't needed while serving; recreated before reconfigure below
 
     assert_eq!(
@@ -91,21 +100,25 @@ async fn reconfigure_preserves_device_and_in_flight_io() -> Result<()> {
         COOKIE,
         "kernel did not echo back our backend identifier"
     );
+    eprintln!("[checkpoint] cookie verified");
 
     our_side.set_nonblocking(true)?;
     let our_side = UnixStream::from_std(our_side)?;
     let serve_handle = tokio::spawn(serve(MemDevice(store.clone()), our_side));
 
     // Prove real I/O flows through the device before we touch anything.
+    eprintln!("[checkpoint] starting initial roundtrip io");
     let idx_copy = index;
     tokio::task::spawn_blocking(move || roundtrip_io(idx_copy, 0xAB))
         .await
         .expect("join")
         .context("initial roundtrip io")?;
+    eprintln!("[checkpoint] initial roundtrip io done");
 
     // --- simulate the serving process dying ---
     serve_handle.abort();
     let _ = serve_handle.await;
+    eprintln!("[checkpoint] serve task aborted");
 
     // Kick off a write while nothing is listening on the kernel's socket; with
     // no NBD_ATTR_TIMEOUT set the kernel parks this request indefinitely
@@ -116,12 +129,14 @@ async fn reconfigure_preserves_device_and_in_flight_io() -> Result<()> {
     // Give it a moment to actually be in-flight against the dead socket
     // before we reattach.
     tokio::time::sleep(Duration::from_millis(300)).await;
+    eprintln!("[checkpoint] stuck_write.is_finished() = {}", stuck_write.is_finished());
     assert!(
         !stuck_write.is_finished(),
         "write completed without a live socket — test isn't exercising the stall"
     );
 
     // --- reconfigure a fresh socket onto the same index ---
+    eprintln!("[checkpoint] calling reconfigure()");
     let mut nbd = NBD::new().context("reopen NBD netlink socket")?;
     let (kernel_side, our_side) = StdUnixStream::pair().context("socketpair")?;
     let reconfigured_index = NBDConnect::new()
@@ -132,6 +147,7 @@ async fn reconfigure_preserves_device_and_in_flight_io() -> Result<()> {
         .dead_conn_timeout_secs(DEAD_CONN_TIMEOUT_SECS)
         .reconfigure(&mut nbd, &[kernel_side])
         .context("reconfigure")?;
+    eprintln!("[checkpoint] reconfigure() returned index {reconfigured_index}");
     assert_eq!(reconfigured_index, index, "reconfigure landed on a different index");
     assert_eq!(
         read_backend_cookie(index)?,
@@ -146,11 +162,13 @@ async fn reconfigure_preserves_device_and_in_flight_io() -> Result<()> {
     // The write that was stuck against the dead socket must now complete
     // successfully — proving no data loss and no I/O error surfaced to the
     // caller across the reattach.
+    eprintln!("[checkpoint] waiting on stuck_write to unblock");
     tokio::time::timeout(Duration::from_secs(10), stuck_write)
         .await
         .context("stuck write never completed after reconfigure")?
         .expect("join")
         .context("stuck write returned an error")?;
+    eprintln!("[checkpoint] stuck_write unblocked and completed");
 
     // And the device is fully usable afterwards.
     let idx_copy = index;
@@ -158,6 +176,7 @@ async fn reconfigure_preserves_device_and_in_flight_io() -> Result<()> {
         .await
         .expect("join")
         .context("post-reconfigure roundtrip io")?;
+    eprintln!("[checkpoint] post-reconfigure roundtrip io done");
 
     serve_handle.abort();
     let _ = serve_handle.await;
