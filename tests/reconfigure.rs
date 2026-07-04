@@ -19,6 +19,7 @@ const SIZE_BYTES: u64 = 1 << 20;
 const BLOCK_SIZE: u64 = 4096;
 const COOKIE: &str = "nbd-netlink-reconfigure-test";
 const DEVICE_INDEX: u64 = 0;
+const DEAD_CONN_TIMEOUT_SECS: u64 = 30;
 
 struct MemDevice(Arc<Mutex<Vec<u8>>>);
 
@@ -80,6 +81,7 @@ async fn reconfigure_preserves_device_and_in_flight_io() -> Result<()> {
         .block_size(BLOCK_SIZE)
         .index(DEVICE_INDEX)
         .backend_identifier(COOKIE)
+        .dead_conn_timeout_secs(DEAD_CONN_TIMEOUT_SECS)
         .connect(&mut nbd, &[kernel_side])
         .context("initial connect")?;
     drop(nbd); // netlink socket isn't needed while serving; recreated before reconfigure below
@@ -127,6 +129,7 @@ async fn reconfigure_preserves_device_and_in_flight_io() -> Result<()> {
         .block_size(BLOCK_SIZE)
         .index(index as u64)
         .backend_identifier(COOKIE)
+        .dead_conn_timeout_secs(DEAD_CONN_TIMEOUT_SECS)
         .reconfigure(&mut nbd, &[kernel_side])
         .context("reconfigure")?;
     assert_eq!(reconfigured_index, index, "reconfigure landed on a different index");

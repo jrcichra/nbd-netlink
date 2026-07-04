@@ -113,6 +113,7 @@ pub struct NBDConnect {
     client_flags: u64,
     index: Option<u64>,
     backend_identifier: Option<String>,
+    dead_conn_timeout_secs: Option<u64>,
 }
 
 impl NBDConnect {
@@ -125,6 +126,7 @@ impl NBDConnect {
             client_flags: 0,
             index: None,
             backend_identifier: None,
+            dead_conn_timeout_secs: None,
         }
     }
 
@@ -188,6 +190,17 @@ impl NBDConnect {
         self
     }
 
+    /// Set how long the kernel keeps a request queued, waiting for a live
+    /// connection, before failing it — rather than failing pending I/O
+    /// immediately once every connection has died. This is the window a
+    /// caller has to notice the connection died and
+    /// [`reconfigure`](Self::reconfigure) a new socket onto the device
+    /// before in-flight requests start erroring out.
+    pub fn dead_conn_timeout_secs(&mut self, secs: u64) -> &mut Self {
+        self.dead_conn_timeout_secs = Some(secs);
+        self
+    }
+
     /// Tell the kernel to connect an NBD device to the specified sockets.
     ///
     /// Returns the index of the newly connected NBD device.
@@ -221,6 +234,9 @@ impl NBDConnect {
         }
         if let Some(backend_identifier) = &self.backend_identifier {
             attrs.push(attr(NbdAttr::BackendIdentifier, backend_identifier.as_str())?);
+        }
+        if let Some(dead_conn_timeout_secs) = self.dead_conn_timeout_secs {
+            attrs.push(attr(NbdAttr::DeadConnTimeout, dead_conn_timeout_secs)?);
         }
         attrs.push(sockets_attr);
 
@@ -276,6 +292,9 @@ impl NBDConnect {
         }
         if let Some(backend_identifier) = &self.backend_identifier {
             attrs.push(attr(NbdAttr::BackendIdentifier, backend_identifier.as_str())?);
+        }
+        if let Some(dead_conn_timeout_secs) = self.dead_conn_timeout_secs {
+            attrs.push(attr(NbdAttr::DeadConnTimeout, dead_conn_timeout_secs)?);
         }
         attrs.push(sockets_attr);
 
